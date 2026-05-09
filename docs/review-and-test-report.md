@@ -1,23 +1,29 @@
-# Full Review & Test Process
+# Review & Test Report
 
 ## Scope
-- Backend SSE endpoint
-- Prompt builder
-- Context builder
-- Extension streaming client/provider baseline
+- Context extraction pipeline expanded to include:
+  - current-file prefix/suffix
+  - import extraction
+  - open tabs snippets
+  - recent edit snippets
+  - retrieval chunks with ranking + recency signal
+- AST-aware extraction upgraded through parser facade API (`extract_symbols`, `resolve_scope`) to expose functions/classes/variables + scope metadata for prompting.
+- Context compression now includes dedupe + whitespace normalization + strict global budget.
 
-## Review findings
-1. SSE streaming contract is consistent (`type=token|done`).
-2. Cancellation propagation exists both backend (`request.is_disconnected`) and extension (`AbortController`).
-3. Context truncation guards prompt growth (prefix tail / suffix head).
-4. FIM prompt markers are present and ordered.
+## Code Review Notes
+- `build_context` is now deterministic and budget-bounded.
+- Context ranking formula combines lexical overlap, semantic score, and recency weighting.
+- Prompt format now carries scope/import/symbol metadata explicitly.
+- Parser module is still fallback regex-based; interface intentionally mirrors future tree-sitter adapter.
 
-## Risks / follow-ups
-- `fake_vllm_stream` must be replaced by OpenAI-compatible vLLM client.
-- No distributed cancellation/rate limit yet.
-- No AST extraction / LanceDB retrieval wiring yet.
+## Tests Executed
+- `PYTHONPATH=backend python -m pytest backend/tests -q`
+  - validates FIM markers and metadata
+  - validates budget/truncation/import extraction/ranked retrieval presence
+- `PYTHONPATH=backend python -m compileall backend/app`
+  - compile sanity for backend package
 
-## Validation steps executed
-1. Static sanity compile backend Python modules.
-2. Unit tests for FIM formatting and context truncation.
-3. Manual code inspection for SSE frame shape and cancellation path.
+## Remaining Follow-ups
+- Replace parser fallback with real tree-sitter incremental parsing per language.
+- Add integration tests for multi-file repo graph + import resolution.
+- Add tokenizer-aware (token count, not char count) budgeting.
