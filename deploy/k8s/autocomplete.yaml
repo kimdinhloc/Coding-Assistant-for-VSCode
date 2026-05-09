@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: autocomplete-api}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: autocomplete-api}}
+  template:
+    metadata: {labels: {app: autocomplete-api}}
+    spec:
+      containers:
+      - name: api
+        image: autocomplete-api:latest
+        ports: [{containerPort: 8000}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: autocomplete-api}
+spec:
+  selector: {app: autocomplete-api}
+  ports: [{port: 80, targetPort: 8000}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: vllm-inference}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: vllm-inference}}
+  template:
+    metadata: {labels: {app: vllm-inference}}
+    spec:
+      nodeSelector: {accelerator: nvidia}
+      containers:
+      - name: vllm
+        image: vllm/vllm-openai:latest
+        args: ["--model","Qwen/Qwen2.5-Coder-7B-Instruct","--enable-prefix-caching"]
+        resources:
+          limits: {nvidia.com/gpu: "1"}
