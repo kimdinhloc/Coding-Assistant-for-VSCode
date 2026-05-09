@@ -1,6 +1,6 @@
 # Review & Test Report
 
-## Scope
+## Scope (Part 3 - Context Engine)
 - Context extraction pipeline expanded to include:
   - current-file prefix/suffix
   - import extraction

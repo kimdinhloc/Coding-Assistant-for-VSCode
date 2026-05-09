@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -21,6 +22,7 @@ router = APIRouter()
 store = LanceDBStore()
 vllm = VLLMClient()
 RECENT_REQUESTS: dict[str, str] = {}
+MAX_DEDUP_KEYS = 5000
 
 
 class CompletionRequest(BaseModel):
@@ -48,6 +50,9 @@ async def stream_completion(req: CompletionRequest, request: Request):
     if prev:
         LIFECYCLE.cancel(prev)  # aggressive dedup cancellation
     RECENT_REQUESTS[request_hash] = request_id
+    if len(RECENT_REQUESTS) > MAX_DEDUP_KEYS:
+        oldest_key = next(iter(RECENT_REQUESTS))
+        RECENT_REQUESTS.pop(oldest_key, None)
 
     LIFECYCLE.begin(request_id, req.user_id)
     await REQUEST_QUEUE.put(request_id, priority=req.priority)
@@ -70,24 +75,28 @@ async def stream_completion(req: CompletionRequest, request: Request):
         buffer = []
         token_count = 0
         try:
-            async for tok in vllm.stream_generate(prompt_payload["prompt"], gen_cfg):
-                if await request.is_disconnected() or LIFECYCLE.is_cancelled(request_id):
-                    METRICS.inc("cancelled")
-                    return
-                buffer.append(tok)
-                token_count += 1
-                if len(buffer) < 3:
-                    continue
-                payload = {"type": "token", "request_id": request_id, "seq": seq, "token": "".join(buffer)}
-                yield f"id: {seq}\nevent: token\ndata: {json.dumps(payload)}\n\n"
-                seq += 1
-                buffer.clear()
+            async with asyncio.timeout(30):
+                async for tok in vllm.stream_generate(prompt_payload["prompt"], gen_cfg):
+                    if await request.is_disconnected() or LIFECYCLE.is_cancelled(request_id):
+                        METRICS.inc("cancelled")
+                        return
+                    buffer.append(tok)
+                    token_count += 1
+                    if len(buffer) < 3:
+                        continue
+                    payload = {"type": "token", "request_id": request_id, "seq": seq, "token": "".join(buffer)}
+                    yield f"id: {seq}\nevent: token\ndata: {json.dumps(payload)}\n\n"
+                    seq += 1
+                    buffer.clear()
             if buffer:
                 payload = {"type": "token", "request_id": request_id, "seq": seq, "token": "".join(buffer)}
                 yield f"id: {seq}\nevent: token\ndata: {json.dumps(payload)}\n\n"
-            yield f"event: done\ndata: {json.dumps({'type': 'done', 'request_id': request_id})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'type': 'done', 'request_id': request_id, 'tokens_out': token_count})}\n\n"
             METRICS.inc("requests_ok")
             METRICS.inc("tokens_out", token_count)
+        except TimeoutError:
+            METRICS.inc("timeout")
+            yield f"event: error\ndata: {json.dumps({'type': 'error', 'reason': 'timeout', 'request_id': request_id})}\n\n"
         finally:
             latency_ms = (time.time() - t0) * 1000
             METRICS.observe("request_latency_ms", latency_ms)
